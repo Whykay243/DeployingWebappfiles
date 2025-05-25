@@ -1,0 +1,71 @@
+name: Build and Deploy to EKS
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  AWS_REGION: "us-east-1"
+  IMAGE_REPO_NAME: ${{ secrets.IMAGE_REPO_NAME }}
+  CLUSTER_NAME: ${{ secrets.CLUSTER_NAME }}
+
+jobs:
+  build-push-deploy:
+    name: Build → Push to ECR → Deploy to EKS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_IAM_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set build version
+        id: vars
+        run: echo "VERSION=${GITHUB_RUN_NUMBER}" >> $GITHUB_ENV
+
+      - name: Log in to Amazon ECR
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | \
+          docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+      - name: Build Docker image
+        run: |
+          docker build -t $IMAGE_REPO_NAME:$VERSION .
+          docker tag $IMAGE_REPO_NAME:$VERSION $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO_NAME:$VERSION
+
+      - name: Push image to ECR
+        run: |
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO_NAME:$VERSION
+
+      - name: Update kubeconfig for EKS
+        run: aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER_NAME
+
+      - name: Install Helm
+        run: curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Ensure namespace exists
+        run: |
+          kubectl get namespace config || kubectl create namespace config
+
+      - name: Uninstall existing release (optional cleanup)
+        continue-on-error: true
+        run: helm uninstall web-app --namespace config
+
+      - name: Deploy to EKS via Helm
+        run: |
+          helm upgrade --install web-app ./web-app \
+            --namespace config \
+            --create-namespace \
+            --set image.tag="$VERSION" \
+            -f ./web-app/values.yaml
