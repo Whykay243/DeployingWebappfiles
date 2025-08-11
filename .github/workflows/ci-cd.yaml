@@ -1,0 +1,114 @@
+name: Build and Deploy to EKS
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  AWS_REGION: "us-east-1"
+  IMAGE_REPO_NAME: ${{ secrets.IMAGE_REPO_NAME }}
+  CLUSTER_NAME: ${{ secrets.CLUSTER_NAME }}
+  DOCKER_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  AWS_IAM_ROLE: ${{ secrets.AWS_IAM_ROLE }}
+
+jobs:
+  build-push-deploy:
+    name: Build → Push Docker Image → Deploy to EKS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        # Check out the repository code
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+        # Assume IAM role for AWS CLI and kubectl access to EKS
+
+      - name: Set build version
+        id: vars
+        run: echo "VERSION=${GITHUB_RUN_NUMBER}" >> $GITHUB_ENV
+        # Set build version from GitHub run number
+
+      # Uncomment and use these if you want to push to ECR
+      # - name: Log in to Amazon ECR
+      #   run: |
+      #     aws ecr get-login-password --region $AWS_REGION | \
+      #     docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+      #   # Authenticate Docker client with Amazon ECR
+
+      - name: Log in to Docker Hub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login --username ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
+        # Authenticate Docker client with Docker Hub
+
+      # - name: Build Docker image using AWS ECR
+      #   run: |
+      #     docker build -t $IMAGE_REPO_NAME:$VERSION .
+      #     docker tag $IMAGE_REPO_NAME:$VERSION $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO_NAME:$VERSION
+      #   # Build Docker image and tag it for Amazon ECR
+
+      - name: Build Docker image using DockerHub
+        run: |
+          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_REPO_NAME:$VERSION .
+          docker tag ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_REPO_NAME:$VERSION ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_REPO_NAME:$VERSION
+        # Build Docker image and tag it for Docker Hub
+
+      # - name: Push image to ECR
+      #   run: |
+      #     docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO_NAME:$VERSION
+      #   # Push Docker image to Amazon ECR
+
+      - name: Push image to Docker Hub
+        run: |
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_REPO_NAME:$VERSION
+        # Push Docker image to Docker Hub
+
+      - name: Update kubeconfig for EKS cluster
+        run: aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER_NAME
+        # Configure kubectl for EKS cluster
+
+      - name: Install Helm CLI
+        run: curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        # Install Helm CLI for deploying Helm charts
+
+      - name: Add and update EKS Helm repository
+        run: |
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+        # Add and update Helm repo to ensure latest charts are available
+
+      - name: Ensure Kubernetes namespace 'production-1' exists
+        run: |
+          kubectl get namespace production-1 || kubectl create namespace production-1
+        # Create 'production-1' namespace if it doesn't exist
+
+      - name: Uninstall existing web-app release (optional cleanup)
+        continue-on-error: true
+        run: helm uninstall web-app --namespace production-1
+        # Remove previous Helm release if it exists
+
+      - name: Deploy web-app Helm chart to EKS
+        run: |
+          helm upgrade --install web-app ./web-app \
+            --namespace production-1 \
+            --create-namespace \
+            --set image.repository="${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_REPO_NAME" \
+            --set image.tag="$VERSION" \
+            --set ingress.enabled=true \
+            --values ./web-app/values.yaml
+        # Deploy the web-app Helm chart with ingress enabled
+
+      - name: Apply NLB Service manifest
+        run: |
+          kubectl apply -f service-nlb.yaml --namespace production-1
+        # Deploy the NLB service definition from the root directory
