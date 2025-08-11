@@ -108,7 +108,7 @@ jobs:
             --values ./web-app/values.yaml
         # Deploy the web-app Helm chart with ingress enabled
 
-      - name: Apply NLB Service manifest
-        run: |
-          kubectl apply -f service-nlb.yaml --namespace production-1
-        # Deploy the NLB service definition from the root directory
+      # - name: Apply NLB Service manifest
+      #   run: |
+      #     kubectl apply -f service-nlb.yaml --namespace production-1
+      #   # Deploy the NLB service definition from the root directory
