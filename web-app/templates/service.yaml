@@ -5,21 +5,13 @@ metadata:
   labels:
     {{- include "web-app.labels" . | nindent 4 }}
   annotations:
-    {{- if eq .Values.service.loadBalancerType "classic" }}
-    service.beta.kubernetes.io/aws-load-balancer-type: "classic"
-    {{- else if eq .Values.service.loadBalancerType "nlb" }}
-    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-    {{- end }}
-    {{- with .Values.service.annotations }}
-{{ toYaml . | nindent 4 }}
-    {{- end }}
-
+    {{- toYaml .Values.service.annotations | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   ports:
-    - port: {{ .Values.service.port }}
-      targetPort: http
+    - name: https
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort | default .Values.service.port }}
       protocol: TCP
-      name: http
   selector:
     {{- include "web-app.selectorLabels" . | nindent 4 }}
